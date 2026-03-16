@@ -27,8 +27,12 @@ LongVideoBench (lvb_val.json):
    "duration_group": int, "subtitle_path": str, ...}
   Videos at <root>/<video_path>
 """
+import glob
 import json
 import os
+import shutil
+import tarfile
+import zipfile
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -48,6 +52,188 @@ class QASample:
     def full_question(self) -> str:
         """Question + options as a single string."""
         return self.question + "\n" + "\n".join(self.options)
+
+
+def _looks_like_hf_cache_dir(path: str) -> bool:
+    base = os.path.basename(os.path.abspath(path))
+    return base.startswith("datasets--")
+
+
+def _latest_snapshot_dir(cache_root: str) -> Optional[str]:
+    snapshots_dir = os.path.join(cache_root, "snapshots")
+    if not os.path.isdir(snapshots_dir):
+        return None
+    candidates = [
+        os.path.join(snapshots_dir, name)
+        for name in os.listdir(snapshots_dir)
+        if os.path.isdir(os.path.join(snapshots_dir, name))
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
+
+
+def _hf_cache_roots() -> List[str]:
+    roots: List[str] = []
+    for env_name in ("HUGGINGFACE_HUB_CACHE", "HF_HUB_CACHE"):
+        value = os.environ.get(env_name)
+        if value:
+            roots.append(value)
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        roots.append(os.path.join(hf_home, "hub"))
+    roots.append(os.path.expanduser("~/.cache/huggingface/hub"))
+    # Keep order but drop duplicates.
+    out = []
+    seen = set()
+    for root in roots:
+        root = os.path.abspath(root)
+        if root not in seen:
+            out.append(root)
+            seen.add(root)
+    return out
+
+
+def _default_cache_dirname(repo_id: str) -> str:
+    namespace, name = repo_id.split("/", 1)
+    return f"datasets--{namespace.replace('/', '--')}--{name.replace('/', '--')}"
+
+
+def _find_dataset_root(
+    data_root: str,
+    repo_id: str,
+    required_relpaths: List[str],
+) -> Optional[str]:
+    candidates: List[str] = []
+    if data_root:
+        candidates.append(os.path.abspath(data_root))
+        if _looks_like_hf_cache_dir(data_root):
+            snap = _latest_snapshot_dir(data_root)
+            if snap:
+                candidates.append(snap)
+
+    cache_dirname = _default_cache_dirname(repo_id)
+    for hub_root in _hf_cache_roots():
+        cache_root = os.path.join(hub_root, cache_dirname)
+        candidates.append(cache_root)
+        snap = _latest_snapshot_dir(cache_root)
+        if snap:
+            candidates.append(snap)
+
+    seen = set()
+    for root in candidates:
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        if all(os.path.exists(os.path.join(root, rel)) for rel in required_relpaths):
+            return root
+    return None
+
+
+def _snapshot_download_dataset(repo_id: str) -> str:
+    from huggingface_hub import login, snapshot_download
+
+    token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")
+    if token:
+        try:
+            login(token, add_to_git_credential=False)
+        except Exception:
+            pass
+    return snapshot_download(repo_id=repo_id, repo_type="dataset")
+
+
+def _prepare_mvbench_root(root: str) -> None:
+    video_root = os.path.join(root, "video")
+    if os.path.isdir(video_root):
+        for filename in os.listdir(video_root):
+            if not filename.endswith(".zip"):
+                continue
+            zip_path = os.path.join(video_root, filename)
+            marker = zip_path + ".extracted"
+            if os.path.exists(marker):
+                continue
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(video_root)
+            open(marker, "w").close()
+
+    src_folder = os.path.join(video_root, "data0613")
+    if os.path.isdir(src_folder):
+        for subdir in os.listdir(src_folder):
+            subdir_path = os.path.join(src_folder, subdir)
+            if not os.path.isdir(subdir_path):
+                continue
+            for subsubdir in os.listdir(subdir_path):
+                subsubdir_path = os.path.join(subdir_path, subsubdir)
+                if not os.path.isdir(subsubdir_path):
+                    continue
+                target_folder = os.path.join(video_root, subdir, subsubdir)
+                os.makedirs(target_folder, exist_ok=True)
+                for item in os.listdir(subsubdir_path):
+                    src_path = os.path.join(subsubdir_path, item)
+                    dst_path = os.path.join(target_folder, item)
+                    if not os.path.exists(dst_path):
+                        shutil.move(src_path, dst_path)
+
+
+def _prepare_longvideobench_root(root: str) -> None:
+    videos_dir = os.path.join(root, "videos")
+    if os.path.isdir(videos_dir):
+        return
+
+    tar_files = glob.glob(os.path.join(root, "**", "*.tar*"), recursive=True)
+    if not tar_files:
+        return
+
+    grouped = {}
+    for tar_file in tar_files:
+        base_name = tar_file.split(".tar")[0]
+        grouped.setdefault(base_name, []).append(tar_file)
+
+    for base_name, parts in grouped.items():
+        output_tar = base_name + ".tar"
+        if len(parts) == 1 and parts[0].endswith(".tar"):
+            output_tar = parts[0]
+        elif not os.path.exists(output_tar):
+            with open(output_tar, "wb") as out_tar:
+                for part in sorted(parts):
+                    with open(part, "rb") as part_file:
+                        shutil.copyfileobj(part_file, out_tar)
+
+        extract_dir = os.path.join(root, os.path.basename(base_name))
+        if os.path.exists(extract_dir):
+            continue
+        with tarfile.open(output_tar, "r") as tar_ref:
+            tar_ref.extractall(root)
+
+
+def _resolve_mvbench_root(data_root: str) -> str:
+    repo_id = "OpenGVLab/MVBench"
+    required = ["json", "video"]
+    root = _find_dataset_root(data_root, repo_id, required)
+    if root is None:
+        root = _snapshot_download_dataset(repo_id)
+    _prepare_mvbench_root(root)
+    root = _find_dataset_root(root, repo_id, required) or root
+    if not all(os.path.exists(os.path.join(root, rel)) for rel in required):
+        raise FileNotFoundError(
+            f"MVBench dataset root is invalid: {root}. Expected json/ and video/."
+        )
+    return root
+
+
+def _resolve_longvideobench_root(data_root: str) -> str:
+    repo_id = "longvideobench/LongVideoBench"
+    required = ["lvb_val.json"]
+    root = _find_dataset_root(data_root, repo_id, required)
+    if root is None:
+        root = _snapshot_download_dataset(repo_id)
+    _prepare_longvideobench_root(root)
+    root = _find_dataset_root(root, repo_id, required) or root
+    if not os.path.exists(os.path.join(root, "lvb_val.json")):
+        raise FileNotFoundError(
+            f"LongVideoBench dataset root is invalid: {root}. Expected lvb_val.json."
+        )
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +371,9 @@ class MVBenchDataset:
             data_root: Path to MVBench root directory.
             tasks:     Subset of task names to load (None = all 20 tasks).
         """
-        self.data_root = data_root
-        self.video_root = os.path.join(data_root, "video")
-        self.json_root = os.path.join(data_root, "json")
+        self.data_root = _resolve_mvbench_root(data_root)
+        self.video_root = os.path.join(self.data_root, "video")
+        self.json_root = os.path.join(self.data_root, "json")
         self._samples: List[QASample] = []
         self._load(tasks)
 
@@ -302,9 +488,9 @@ class LongVideoBenchDataset:
             data_root:     Path to LongVideoBench root directory.
             use_subtitles: Append subtitle text to question when available.
         """
-        self.data_root = data_root
+        self.data_root = _resolve_longvideobench_root(data_root)
         self.use_subtitles = use_subtitles
-        ann_path = os.path.join(data_root, "lvb_val.json")
+        ann_path = os.path.join(self.data_root, "lvb_val.json")
         with open(ann_path, "r", encoding="utf-8") as f:
             self.data = json.load(f)
 

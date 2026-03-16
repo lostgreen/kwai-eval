@@ -59,7 +59,7 @@ MODEL_NAME="$(basename "${MODEL_CKPT}")"
 # ---- vLLM extra args (only appended when BACKEND=vllm) ----
 VLLM_EXTRA_ARGS=""
 if [ "${BACKEND}" = "vllm" ]; then
-    VLLM_EXTRA_ARGS="--batch_size ${VLLM_BATCH_SIZE} --gpu_mem_util ${VLLM_GPU_MEM_UTIL}"
+    VLLM_EXTRA_ARGS="--batch_size ${VLLM_BATCH_SIZE} --gpu_mem_util ${VLLM_GPU_MEM_UTIL} --max_num_seqs ${VLLM_MAX_NUM_SEQS} --max_batches ${VLLM_MAX_BATCHES}"
     if [ -n "${VLLM_TP_SIZE}" ]; then
         VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --tp_size ${VLLM_TP_SIZE}"
     fi
@@ -75,6 +75,7 @@ echo "  Output         : ${OUTPUT_DIR}"
 echo "  FutureOmni     : ${FUTUREOMNI_NFRAMES} frames"
 echo "  seeAoT         : ${SEEAOT_NFRAMES} frames"
 echo "  MVBench        : ${MVBENCH_NFRAMES} frames"
+echo "  MVBench FPS    : ${MVBENCH_FPS:-0}"
 echo "  LongVideoBench : ${LONGVIDEOBENCH_NFRAMES} frames"
 echo "============================================================"
 
@@ -89,6 +90,99 @@ _register() {
     local f="$1"
     RESULT_FILES+=("$f")
     echo "  → ${f}"
+}
+
+_gpu_list() {
+    local devices="${CUDA_VISIBLE_DEVICES:-0}"
+    IFS=',' read -r -a GPU_LIST <<< "${devices}"
+    printf '%s\n' "${GPU_LIST[@]}"
+}
+
+_resolve_shard_workers() {
+    local gpu_count="$1"
+    if [ "${BACKEND}" != "vllm" ]; then
+        echo 1
+        return
+    fi
+    if [ -n "${VLLM_TP_SIZE}" ]; then
+        echo 1
+        return
+    fi
+    case "${VLLM_SHARD_WORKERS}" in
+        auto)
+            echo "${gpu_count}"
+            ;;
+        false|0)
+            echo 1
+            ;;
+        *)
+            echo "${VLLM_SHARD_WORKERS}"
+            ;;
+    esac
+}
+
+_run_infer() {
+    python "$@"
+}
+
+_merge_shards() {
+    local final_file="$1"
+    shift
+    : > "${final_file}"
+    for shard_file in "$@"; do
+        if [ -f "${shard_file}" ]; then
+            cat "${shard_file}" >> "${final_file}"
+            rm -f "${shard_file}"
+        fi
+    done
+}
+
+_run_vllm_sharded() {
+    local result_file="$1"
+    shift
+    local -a base_args=("$@")
+    if [ "${BACKEND}" != "vllm" ]; then
+        python "${INFER_SCRIPT}" "${base_args[@]}"
+        return
+    fi
+    mapfile -t GPU_LIST < <(_gpu_list)
+    local gpu_count="${#GPU_LIST[@]}"
+    local shard_workers
+    shard_workers="$(_resolve_shard_workers "${gpu_count}")"
+
+    if [ "${shard_workers}" -le 1 ]; then
+        _run_infer "${INFER_SCRIPT}" "${base_args[@]}" --output_file "${result_file}" ${VLLM_EXTRA_ARGS}
+        return
+    fi
+
+    if [ "${shard_workers}" -gt "${gpu_count}" ]; then
+        shard_workers="${gpu_count}"
+    fi
+
+    echo "  [Sharding] ${shard_workers} workers across ${gpu_count} visible GPUs"
+    local -a pids=()
+    local -a shard_files=()
+    local worker gpu shard_file
+    for ((worker=0; worker<shard_workers; worker++)); do
+        gpu="${GPU_LIST[worker]}"
+        shard_file="${result_file%.jsonl}.shard${worker}.jsonl"
+        shard_files+=("${shard_file}")
+        CUDA_VISIBLE_DEVICES="${gpu}" python "${INFER_SCRIPT}" \
+            "${base_args[@]}" \
+            --output_file "${shard_file}" \
+            --num_shards "${shard_workers}" \
+            --shard_rank "${worker}" \
+            --tp_size 1 \
+            ${VLLM_EXTRA_ARGS} &
+        pids+=("$!")
+    done
+
+    local pid
+    for pid in "${pids[@]}"; do
+        wait "${pid}"
+    done
+
+    _merge_shards "${result_file}" "${shard_files[@]}"
 }
 
 # ============================================================
@@ -111,14 +205,14 @@ run_futureomni() {
     DATA_NAME="$(basename "${FUTUREOMNI_DATA_FILE}" .json)"
     RESULT="${OUTPUT_DIR}/futureomni_${DATA_NAME}_${MODEL_NAME}_${FUTUREOMNI_NFRAMES}f_${RESULT_SUFFIX}.jsonl"
 
-    python "${INFER_SCRIPT}" \
-        --dataset    futureomni \
-        --data_file  "${FUTUREOMNI_DATA_FILE}" \
+    _run_vllm_sharded "${RESULT}" \
+        --dataset futureomni \
+        --data_file "${FUTUREOMNI_DATA_FILE}" \
         --video_root "${FUTUREOMNI_VIDEO_ROOT}" \
-        --ckpt       "${MODEL_CKPT}" \
+        --ckpt "${MODEL_CKPT}" \
         --output_dir "${OUTPUT_DIR}" \
-        --nframes    "${FUTUREOMNI_NFRAMES}" \
-        ${AUDIO_ARG} ${VLLM_EXTRA_ARGS}
+        --nframes "${FUTUREOMNI_NFRAMES}" \
+        ${AUDIO_ARG}
 
     _register "${RESULT}"
     echo "  [FutureOmni] Done"
@@ -143,14 +237,13 @@ run_seeaot() {
         RESULT="${OUTPUT_DIR}/seeaot_${SUBSET}_${MODEL_NAME}_${SEEAOT_NFRAMES}f_${RESULT_SUFFIX}.jsonl"
         echo "  [${SUBSET}] Running..."
 
-        python "${INFER_SCRIPT}" \
-            --dataset    seeaot \
-            --data_file  "${DATA_FILE}" \
+        _run_vllm_sharded "${RESULT}" \
+            --dataset seeaot \
+            --data_file "${DATA_FILE}" \
             --video_root "${VIDEO_ROOT}" \
-            --ckpt       "${MODEL_CKPT}" \
+            --ckpt "${MODEL_CKPT}" \
             --output_dir "${OUTPUT_DIR}" \
-            --nframes    "${SEEAOT_NFRAMES}" \
-            ${VLLM_EXTRA_ARGS}
+            --nframes "${SEEAOT_NFRAMES}"
 
         _register "${RESULT}"
     done
@@ -163,21 +256,26 @@ run_seeaot() {
 run_mvbench() {
     echo ""
     echo "── [MVBench] ─────────────────────────────────────────"
-    if [ ! -d "${MVBENCH_DATA_ROOT}" ]; then
-        echo "  [ERROR] Data root not found: ${MVBENCH_DATA_ROOT}"
-        echo "  Update MVBENCH_DATA_ROOT in config.sh."
-        return 1
+    if [ -n "${MVBENCH_DATA_ROOT}" ] && [ ! -d "${MVBENCH_DATA_ROOT}" ]; then
+        echo "  [Info] MVBench root not found locally: ${MVBENCH_DATA_ROOT}"
+        echo "  [Info] Loader will try Hugging Face cache / auto-download."
     fi
 
-    RESULT="${OUTPUT_DIR}/mvbench_${MODEL_NAME}_${MVBENCH_NFRAMES}f_${RESULT_SUFFIX}.jsonl"
+    SAMPLE_TAG="${MVBENCH_NFRAMES}f"
+    FPS_ARG=""
+    if awk "BEGIN {exit !(${MVBENCH_FPS:-0} > 0)}"; then
+        SAMPLE_TAG="${MVBENCH_FPS}fps"
+        FPS_ARG="--fps ${MVBENCH_FPS}"
+    fi
+    RESULT="${OUTPUT_DIR}/mvbench_${MODEL_NAME}_${SAMPLE_TAG}_${RESULT_SUFFIX}.jsonl"
 
-    python "${INFER_SCRIPT}" \
-        --dataset   mvbench \
+    _run_vllm_sharded "${RESULT}" \
+        --dataset mvbench \
         --data_root "${MVBENCH_DATA_ROOT}" \
-        --ckpt      "${MODEL_CKPT}" \
+        --ckpt "${MODEL_CKPT}" \
         --output_dir "${OUTPUT_DIR}" \
-        --nframes   "${MVBENCH_NFRAMES}" \
-        ${VLLM_EXTRA_ARGS}
+        --nframes "${MVBENCH_NFRAMES}" \
+        ${FPS_ARG}
 
     _register "${RESULT}"
     echo "  [MVBench] Done"
@@ -189,10 +287,9 @@ run_mvbench() {
 run_longvideobench() {
     echo ""
     echo "── [LongVideoBench] ──────────────────────────────────"
-    if [ ! -d "${LONGVIDEOBENCH_DATA_ROOT}" ]; then
-        echo "  [ERROR] Data root not found: ${LONGVIDEOBENCH_DATA_ROOT}"
-        echo "  Update LONGVIDEOBENCH_DATA_ROOT in config.sh."
-        return 1
+    if [ -n "${LONGVIDEOBENCH_DATA_ROOT}" ] && [ ! -d "${LONGVIDEOBENCH_DATA_ROOT}" ]; then
+        echo "  [Info] LongVideoBench root not found locally: ${LONGVIDEOBENCH_DATA_ROOT}"
+        echo "  [Info] Loader will try Hugging Face cache / auto-download."
     fi
 
     NO_SUB_ARG=""
@@ -202,13 +299,13 @@ run_longvideobench() {
 
     RESULT="${OUTPUT_DIR}/longvideobench_${MODEL_NAME}_${LONGVIDEOBENCH_NFRAMES}f_${RESULT_SUFFIX}.jsonl"
 
-    python "${INFER_SCRIPT}" \
-        --dataset   longvideobench \
+    _run_vllm_sharded "${RESULT}" \
+        --dataset longvideobench \
         --data_root "${LONGVIDEOBENCH_DATA_ROOT}" \
-        --ckpt      "${MODEL_CKPT}" \
+        --ckpt "${MODEL_CKPT}" \
         --output_dir "${OUTPUT_DIR}" \
-        --nframes   "${LONGVIDEOBENCH_NFRAMES}" \
-        ${NO_SUB_ARG} ${VLLM_EXTRA_ARGS}
+        --nframes "${LONGVIDEOBENCH_NFRAMES}" \
+        ${NO_SUB_ARG}
 
     _register "${RESULT}"
     echo "  [LongVideoBench] Done"

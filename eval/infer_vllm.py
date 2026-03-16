@@ -118,7 +118,36 @@ def build_system_prompt(dataset_type: str) -> Optional[str]:
 # vLLM model loading
 # ---------------------------------------------------------------------------
 
-def load_vllm_model(ckpt: str, tp_size: Optional[int], gpu_mem_util: float):
+def auto_select_tp_size(ckpt: str, n_gpus: int) -> int:
+    """
+    Pick a conservative TP size for dense VL models.
+
+    Using all visible GPUs for small models (e.g. 4B) often hurts throughput
+    because communication cost dominates. This heuristic keeps TP modest for
+    smaller checkpoints while still scaling large/MoE models across all GPUs.
+    """
+    if n_gpus <= 1:
+        return 1
+
+    ckpt_lower = ckpt.lower()
+    if any(tag in ckpt for tag in ["-A3B", "-A22B", "-A47B", "MoE"]):
+        return n_gpus
+
+    if any(tag in ckpt_lower for tag in ["72b", "70b", "32b", "30b", "27b", "34b"]):
+        return n_gpus
+    if any(tag in ckpt_lower for tag in ["14b", "13b", "9b", "8b", "7b"]):
+        return min(4, n_gpus)
+    if any(tag in ckpt_lower for tag in ["4b", "3b", "2b"]):
+        return min(2, n_gpus)
+    return min(4, n_gpus)
+
+
+def load_vllm_model(
+    ckpt: str,
+    tp_size: Optional[int],
+    gpu_mem_util: float,
+    max_num_seqs: int,
+):
     """
     Initialize vLLM engine with automatic tensor parallelism.
 
@@ -131,7 +160,7 @@ def load_vllm_model(ckpt: str, tp_size: Optional[int], gpu_mem_util: float):
 
     n_gpus = torch.cuda.device_count()
     if tp_size is None:
-        tp_size = max(1, n_gpus)
+        tp_size = auto_select_tp_size(ckpt, n_gpus)
 
     print(f"[vLLM] Initializing: model={ckpt}, tp={tp_size}/{n_gpus} GPUs, "
           f"mem_util={gpu_mem_util}")
@@ -150,7 +179,7 @@ def load_vllm_model(ckpt: str, tp_size: Optional[int], gpu_mem_util: float):
         model=ckpt,
         tensor_parallel_size=tp_size,
         enable_expert_parallel=is_moe,
-        max_num_seqs=8,
+        max_num_seqs=max_num_seqs,
         limit_mm_per_prompt=limit_mm,
         gpu_memory_utilization=gpu_mem_util,
         trust_remote_code=True,
@@ -167,8 +196,14 @@ def load_vllm_model(ckpt: str, tp_size: Optional[int], gpu_mem_util: float):
 # Request building
 # ---------------------------------------------------------------------------
 
-def build_request(processor, sample: QASample, dataset_type: str,
-                  nframes: int, sys_prompt: Optional[str]) -> dict:
+def build_request(
+    processor,
+    sample: QASample,
+    dataset_type: str,
+    nframes: int,
+    fps: float,
+    sys_prompt: Optional[str],
+) -> dict:
     """
     Build a single vLLM request dict for a QASample.
 
@@ -182,7 +217,12 @@ def build_request(processor, sample: QASample, dataset_type: str,
         # Frame-based task: pass individual images
         content = [{"type": "image", "image": fp} for fp in sample.frame_paths]
     else:
-        content = [{"type": "video", "video": sample.video_path, "nframes": nframes}]
+        video_item = {"type": "video", "video": sample.video_path}
+        if fps > 0:
+            video_item["fps"] = fps
+        else:
+            video_item["nframes"] = nframes
+        content = [video_item]
 
     if sys_prompt:
         content.append({"type": "text", "text": prompt_text})
@@ -198,36 +238,26 @@ def build_request(processor, sample: QASample, dataset_type: str,
         messages, tokenize=False, add_generation_prompt=True
     )
 
-    try:
-        from qwen_vl_utils import process_vision_info
-        image_inputs, video_inputs, video_kwargs = process_vision_info(
-            messages, return_video_kwargs=True
-        )
-        mm_data = {}
-        if image_inputs is not None:
-            mm_data["image"] = image_inputs
-        if video_inputs is not None:
-            mm_data["video"] = video_inputs
-
-        req = {"prompt": text}
-        if mm_data:
-            req["multi_modal_data"] = mm_data
-        if video_kwargs:
-            req["mm_processor_kwargs"] = video_kwargs
-        return req
-
-    except (ImportError, Exception) as e:
-        # Fallback: pass video path as file URL; vLLM handles frame extraction
-        print(f"[WARN] process_vision_info failed ({e}), using file-URL fallback.")
-        if sample.frame_paths:
-            mm_data = {"image": [f"file://{os.path.abspath(p)}" for p in sample.frame_paths]}
-        else:
-            mm_data = {"video": f"file://{os.path.abspath(sample.video_path)}"}
+    if sample.frame_paths:
         return {
             "prompt": text,
-            "multi_modal_data": mm_data,
-            "mm_processor_kwargs": {"nframes": nframes},
+            "multi_modal_data": {
+                "image": [f"file://{os.path.abspath(p)}" for p in sample.frame_paths]
+            },
         }
+
+    # For video inputs, pass the file path directly to vLLM and let its own
+    # multimodal processor extract frames. Reusing qwen_vl_utils output here
+    # can surface type mismatches in mm_processor_kwargs for some Qwen3-VL setups.
+    return {
+        "prompt": text,
+        "multi_modal_data": {
+            "video": f"file://{os.path.abspath(sample.video_path)}"
+        },
+        "mm_processor_kwargs": (
+            {"fps": fps} if fps > 0 else {"nframes": nframes}
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +294,12 @@ def load_done_ids(output_file: str) -> set:
     return done
 
 
+def select_indices(indices: list[int], shard_rank: int, num_shards: int) -> list[int]:
+    if num_shards <= 1:
+        return indices
+    return indices[shard_rank::num_shards]
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -289,7 +325,9 @@ def main():
     # Common
     parser.add_argument("--ckpt", required=True, help="Model path or HuggingFace model ID")
     parser.add_argument("--output_dir", default="./results", help="Output directory")
+    parser.add_argument("--output_file", default="", help="Output JSONL path override")
     parser.add_argument("--nframes", type=int, default=16, help="Frames to sample per video")
+    parser.add_argument("--fps", type=float, default=-1.0, help="Sample video at fixed FPS (>0 overrides nframes)")
     parser.add_argument(
         "--batch_size", type=int, default=8,
         help="Number of samples to batch per vLLM generate() call",
@@ -303,6 +341,10 @@ def main():
         help="vLLM GPU memory utilization fraction (default: 0.9)",
     )
     parser.add_argument(
+        "--max_num_seqs", type=int, default=8,
+        help="Max concurrent sequences inside vLLM engine (default: 8)",
+    )
+    parser.add_argument(
         "--no_subtitles", action="store_true",
         help="(LongVideoBench) Disable subtitle loading",
     )
@@ -310,7 +352,15 @@ def main():
         "--tasks", nargs="+", default=None,
         help="(MVBench) Specific task names to evaluate (default: all 20)",
     )
+    parser.add_argument("--num_shards", type=int, default=1, help="Total dataset shards")
+    parser.add_argument("--shard_rank", type=int, default=0, help="Current shard rank")
+    parser.add_argument("--max_batches", type=int, default=0, help="Stop after this many batches (0 = all)")
     args = parser.parse_args()
+
+    if args.num_shards < 1:
+        raise ValueError("--num_shards must be >= 1")
+    if args.shard_rank < 0 or args.shard_rank >= args.num_shards:
+        raise ValueError("--shard_rank must be in [0, num_shards)")
 
     # Require VLLM_WORKER_MULTIPROC_METHOD=spawn for multi-GPU
     if os.environ.get("VLLM_WORKER_MULTIPROC_METHOD") != "spawn":
@@ -326,11 +376,17 @@ def main():
 
     model_name = os.path.basename(args.ckpt.rstrip("/"))
     os.makedirs(args.output_dir, exist_ok=True)
-    output_file = os.path.join(
-        args.output_dir, f"{tag}_{model_name}_{args.nframes}f_vllm.jsonl"
+    sample_tag = f"{args.fps:g}fps" if args.fps > 0 else f"{args.nframes}f"
+    output_file = args.output_file or os.path.join(
+        args.output_dir, f"{tag}_{model_name}_{sample_tag}_vllm.jsonl"
     )
 
-    print(f"[Config] dataset={args.dataset} | nframes={args.nframes} | batch={args.batch_size}")
+    print(
+        f"[Config] dataset={args.dataset} | nframes={args.nframes} | "
+        f"fps={args.fps} | batch={args.batch_size} | "
+        f"max_num_seqs={args.max_num_seqs} | "
+        f"shard={args.shard_rank + 1}/{args.num_shards}"
+    )
     print(f"[Config] model={args.ckpt}")
     print(f"[Output] {output_file}")
 
@@ -354,13 +410,16 @@ def main():
     # Resume
     done_ids = load_done_ids(output_file)
     indices = [i for i in range(len(dataset)) if dataset[i].idx not in done_ids]
-    print(f"[Resume] {len(done_ids)} done, {len(indices)} remaining")
+    indices = select_indices(indices, args.shard_rank, args.num_shards)
+    print(f"[Resume] {len(done_ids)} done, {len(indices)} remaining in shard")
     if not indices:
         print("[Skip] All samples already processed.")
         return
 
     # Load vLLM model
-    llm, processor = load_vllm_model(args.ckpt, args.tp_size, args.gpu_mem_util)
+    llm, processor = load_vllm_model(
+        args.ckpt, args.tp_size, args.gpu_mem_util, args.max_num_seqs
+    )
 
     from vllm import SamplingParams
     sampling_params = SamplingParams(
@@ -376,8 +435,11 @@ def main():
     # Batch inference
     errors = 0
     with open(output_file, "a", encoding="utf-8") as fout:
+        batch_iter = range(0, len(indices), args.batch_size)
+        if args.max_batches > 0:
+            batch_iter = list(batch_iter)[:args.max_batches]
         for batch_start in tqdm(
-            range(0, len(indices), args.batch_size),
+            batch_iter,
             desc=f"Inference (batch={args.batch_size})",
         ):
             batch_indices = indices[batch_start: batch_start + args.batch_size]
@@ -392,7 +454,7 @@ def main():
                     continue
                 try:
                     req = build_request(
-                        processor, sample, args.dataset, args.nframes, sys_prompt
+                        processor, sample, args.dataset, args.nframes, args.fps, sys_prompt
                     )
                     requests.append(req)
                     valid_samples.append(sample)

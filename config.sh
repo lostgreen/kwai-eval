@@ -39,12 +39,26 @@ OUTPUT_DIR="./results"
 # but more GPU memory. Recommended: 4-16 depending on video length.
 VLLM_BATCH_SIZE=8
 
+# Smoke test helper: only run the first N generate() batches.
+# Set to 0 for full evaluation.
+VLLM_MAX_BATCHES=1
+
 # GPU memory fraction allocated to vLLM (0.0–1.0).
 VLLM_GPU_MEM_UTIL=0.8
 
 # Tensor parallel size. Leave empty to auto-detect (= GPU count).
 # Set explicitly to override, e.g. VLLM_TP_SIZE=4
-VLLM_TP_SIZE=""
+# Two-GPU smoke test: use TP=2 and disable sharding.
+VLLM_TP_SIZE="2"
+
+# Max concurrent sequences inside the vLLM engine.
+# Usually set equal to BATCH_SIZE for best throughput if memory allows.
+VLLM_MAX_NUM_SEQS=8
+
+# Multi-process dataset sharding.
+# When "auto", vLLM runs one single-GPU worker per visible GPU if TP is not set.
+# Set to "false" to disable sharding, or an integer to force worker count.
+VLLM_SHARD_WORKERS="false"
 
 # ------------------------------------------------------------
 #  FutureOmni
@@ -72,7 +86,7 @@ FUTUREOMNI_NFRAMES=32
 # ------------------------------------------------------------
 
 # Root containing data_files/ and videos/ subdirectories.
-SEEAOT_ROOT="/path/to/seeAoT"
+SEEAOT_ROOT="/m2v_intern/xuboshen/zgw/data/AoTBench"
 
 # Subsets to evaluate. Comment out any you want to skip.
 SEEAOT_SUBSETS=(
@@ -101,12 +115,15 @@ SEEAOT_NFRAMES=16
 #             Episodic Reasoning, Counterfactual Inference
 # ------------------------------------------------------------
 
-# Root directory with json/ and video/ subdirectories.
-MVBENCH_DATA_ROOT="/path/to/MVBench"
+# Root directory with json/ and video/ subdirectories, or HF cache root/snapshot.
+MVBENCH_DATA_ROOT="/m2v_intern/xuboshen/zgw/hf_cache_temp/datasets--OpenGVLab--MVBench"
 
 # Frames to sample per video.
 # Default: 16  (VLMEvalKit uses 8; 16 gives better accuracy for Qwen3)
 MVBENCH_NFRAMES=16
+
+# If > 0, sample videos by FPS instead of fixed frame count.
+MVBENCH_FPS=1.0
 
 # ------------------------------------------------------------
 #  LongVideoBench
