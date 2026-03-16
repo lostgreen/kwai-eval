@@ -206,6 +206,33 @@ def _prepare_longvideobench_root(root: str) -> None:
             tar_ref.extractall(root)
 
 
+def _longvideobench_missing_videos(root: str, max_report: int = 8) -> List[str]:
+    ann_path = os.path.join(root, "lvb_val.json")
+    if not os.path.exists(ann_path):
+        return ["lvb_val.json"]
+
+    try:
+        with open(ann_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ["lvb_val.json (unreadable)"]
+
+    missing: List[str] = []
+    for item in data:
+        rel_path = str(item.get("video_path", "")).lstrip("./")
+        if not rel_path:
+            missing.append("[empty video_path]")
+        elif not os.path.exists(os.path.join(root, rel_path)):
+            missing.append(rel_path)
+        if len(missing) >= max_report:
+            break
+    return missing
+
+
+def _longvideobench_is_complete(root: str) -> bool:
+    return len(_longvideobench_missing_videos(root, max_report=1)) == 0
+
+
 def _resolve_mvbench_root(data_root: str) -> str:
     repo_id = "OpenGVLab/MVBench"
     required = ["json", "video"]
@@ -225,13 +252,28 @@ def _resolve_longvideobench_root(data_root: str) -> str:
     repo_id = "longvideobench/LongVideoBench"
     required = ["lvb_val.json"]
     root = _find_dataset_root(data_root, repo_id, required)
-    if root is None:
-        root = _snapshot_download_dataset(repo_id)
+    if root is not None:
+        _prepare_longvideobench_root(root)
+        if _longvideobench_is_complete(root):
+            return root
+        missing = _longvideobench_missing_videos(root)
+        print(
+            "[LongVideoBench] Incomplete local cache detected, "
+            f"will resume download. Missing examples: {missing}"
+        )
+
+    root = _snapshot_download_dataset(repo_id)
     _prepare_longvideobench_root(root)
     root = _find_dataset_root(root, repo_id, required) or root
     if not os.path.exists(os.path.join(root, "lvb_val.json")):
         raise FileNotFoundError(
             f"LongVideoBench dataset root is invalid: {root}. Expected lvb_val.json."
+        )
+    if not _longvideobench_is_complete(root):
+        missing = _longvideobench_missing_videos(root)
+        raise FileNotFoundError(
+            "LongVideoBench download/extraction is still incomplete at "
+            f"{root}. Missing examples: {missing}"
         )
     return root
 
