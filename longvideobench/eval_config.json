@@ -14,11 +14,11 @@
         }
     },
     "data": {
-        "LongVideoBench_8frame_subs": {
+        "LongVideoBench_64frame": {
             "class": "LongVideoBench",
             "dataset": "LongVideoBench",
-            "nframe": 8,
-            "use_subtitle": true
+            "nframe": 64,
+            "use_subtitle": false
         }
     }
 }
