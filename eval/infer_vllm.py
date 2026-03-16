@@ -224,6 +224,10 @@ def build_request(
             video_item["fps"] = fps
         else:
             video_item["nframes"] = nframes
+        # Pixel budget must be set explicitly to support higher nframes (e.g. 32+)
+        video_item["min_pixels"] = 100352
+        video_item["max_pixels"] = 602112
+        video_item["total_pixels"] = 38535168 if nframes >= 64 else 19267584
         content = [video_item]
 
     if sys_prompt:
