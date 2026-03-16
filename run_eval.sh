@@ -14,7 +14,7 @@
 #    bash run_eval.sh metrics          # recompute metrics only
 # ============================================================
 set -euo pipefail
-
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ============================================================

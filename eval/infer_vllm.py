@@ -46,6 +46,7 @@ import sys
 import torch
 from tqdm import tqdm
 
+from typing import Optional
 sys.path.insert(0, os.path.dirname(__file__))
 from dataset import MVBenchDataset, QASample, load_dataset
 

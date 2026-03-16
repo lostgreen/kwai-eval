@@ -13,19 +13,19 @@
 #                   Requires: pip install vllm
 #                   Required env: export VLLM_WORKER_MULTIPROC_METHOD=spawn
 # ------------------------------------------------------------
-BACKEND="transformers"
+BACKEND="vllm"
 
 # ------------------------------------------------------------
 #  Model
 # ------------------------------------------------------------
 # HuggingFace model ID or local checkpoint path.
 # Supported: Qwen3-VL-4B/7B/30B/72B, Qwen2.5-VL-7B, Qwen3-Omni, etc.
-MODEL_CKPT="Qwen/Qwen3-VL-7B-Instruct"
+MODEL_CKPT="/home/xuboshen/models/Qwen3-VL-4B-Instruct"
 
 # GPU device(s) to use (comma-separated).
 # For vLLM tensor parallelism, list all GPUs you want to use:
 #   e.g. "0,1,2,3" for 4-GPU inference
-CUDA_VISIBLE_DEVICES="0"
+CUDA_VISIBLE_DEVICES="0,1"
 
 # ------------------------------------------------------------
 #  Output
@@ -40,7 +40,7 @@ OUTPUT_DIR="./results"
 VLLM_BATCH_SIZE=8
 
 # GPU memory fraction allocated to vLLM (0.0–1.0).
-VLLM_GPU_MEM_UTIL=0.9
+VLLM_GPU_MEM_UTIL=0.8
 
 # Tensor parallel size. Leave empty to auto-detect (= GPU count).
 # Set explicitly to override, e.g. VLLM_TP_SIZE=4
@@ -52,8 +52,8 @@ VLLM_TP_SIZE=""
 #  Dataset  : 919 videos, 1034 multiple-choice QA pairs
 #  Options  : 4–6 choices (A–F) per question
 # ------------------------------------------------------------
-FUTUREOMNI_DATA_FILE="/path/to/FutureOmni/eval/data/test.json"
-FUTUREOMNI_VIDEO_ROOT="/path/to/FutureOmni/videos"
+FUTUREOMNI_DATA_FILE="/m2v_intern/xuboshen/zgw/data/FutureOmni/futureomni_test.json"
+FUTUREOMNI_VIDEO_ROOT="/m2v_intern/xuboshen/zgw/data/FutureOmni/videos"
 
 # (Optional) Directory containing audio files named {qid}.wav.
 # Set to "" to disable audio input.
