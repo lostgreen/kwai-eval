@@ -1,0 +1,23 @@
+{
+    "model": {
+        "Qwen3-VL-4B-Instruct": {
+            "class": "Qwen3VLChat",
+            "model_path": "/path/to/models/Qwen3-VL-4B-Instruct",
+            "use_custom_prompt": false,
+            "use_vllm": true,
+            "temperature": 0.7,
+            "max_new_tokens": 16384,
+            "top_p": 0.8,
+            "top_k": 20,
+            "repetition_penalty": 1.0,
+            "presence_penalty": 1.5
+        }
+    },
+    "data": {
+        "MVBench_MP4_1fps": {
+            "class": "MVBench_MP4",
+            "dataset": "MVBench_MP4",
+            "fps": 1.0
+        }
+    }
+}

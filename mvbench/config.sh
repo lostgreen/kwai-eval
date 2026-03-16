@@ -22,5 +22,8 @@ MASTER_PORT=29501
 # 可选: MVBench_MP4_1fps / MVBench_MP4_8frame / MVBench_8frame 等
 DATASET="MVBench_MP4_1fps"
 
+# ---- VLMEvalKit JSON config (指定本地模型路径, 避免从 HF Hub 下载) ----
+EVAL_CONFIG="${_SELF_DIR}/eval_config.json"
+
 # ---- Output ----
 WORK_DIR="${RESULTS_ROOT}/mvbench"

@@ -21,5 +21,8 @@ MASTER_PORT=29502
 # 可选: LongVideoBench_8frame_subs / LongVideoBench_0.5fps_subs / LongVideoBench_64frame 等
 DATASET="LongVideoBench_8frame_subs"
 
+# ---- VLMEvalKit JSON config (指定本地模型路径, 避免从 HF Hub 下载) ----
+EVAL_CONFIG="${_SELF_DIR}/eval_config.json"
+
 # ---- Output ----
 WORK_DIR="${RESULTS_ROOT}/longvideobench"

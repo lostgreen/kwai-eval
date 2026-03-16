@@ -18,6 +18,10 @@ FUTUREOMNI_DATA_FILE="/m2v_intern/xuboshen/zgw/data/FutureOmni/futureomni_test.j
 FUTUREOMNI_VIDEO_ROOT="/m2v_intern/xuboshen/zgw/data/FutureOmni/videos"
 SEEAOT_DATA_ROOT="/m2v_intern/xuboshen/zgw/data/AoTBench"
 
+# ---- HuggingFace 缓存根目录 (VLMEvalKit 用此路径查找 MVBench / LongVideoBench) ----
+# 对应服务器上存放 datasets--xxx 文件夹的那一级目录
+HF_HUB_CACHE_ROOT="/m2v_intern/xuboshen/zgw/hf_cache_temp"
+
 # ---- 结果输出 (所有评测结果统一存到这个目录下) ----
 GLOBAL_CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS_ROOT="${GLOBAL_CONFIG_DIR}/results"
