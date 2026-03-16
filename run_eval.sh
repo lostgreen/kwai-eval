@@ -227,7 +227,7 @@ run_futureomni() {
 run_seeaot() {
     echo ""
     echo "── [seeAoT] ──────────────────────────────────────────"
-    VIDEO_ROOT="${SEEAOT_ROOT}/videos"
+    VIDEO_ROOT="${SEEAOT_ROOT}"
     DATA_FILES_DIR="${SEEAOT_ROOT}/data_files"
 
     for SUBSET in "${SEEAOT_SUBSETS[@]}"; do

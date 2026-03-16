@@ -207,9 +207,11 @@ def build_request(
     """
     Build a single vLLM request dict for a QASample.
 
-    For frame-type samples (MVBench Episodic Reasoning), passes images instead of video.
-    Falls back to passing the video file path if process_vision_info is unavailable.
+    Uses qwen_vl_utils.process_vision_info to load actual pixel data,
+    since vLLM's multi_modal_data expects tensors/arrays, not file:// URIs.
     """
+    from qwen_vl_utils import process_vision_info
+
     prompt_text = build_prompt(sample, dataset_type)
 
     # Build content list
@@ -238,25 +240,18 @@ def build_request(
         messages, tokenize=False, add_generation_prompt=True
     )
 
+    # Load actual pixel data via qwen_vl_utils
+    image_data, video_data = process_vision_info(messages)
+
     if sample.frame_paths:
         return {
             "prompt": text,
-            "multi_modal_data": {
-                "image": [f"file://{os.path.abspath(p)}" for p in sample.frame_paths]
-            },
+            "multi_modal_data": {"image": image_data},
         }
 
-    # For video inputs, pass the file path directly to vLLM and let its own
-    # multimodal processor extract frames. Reusing qwen_vl_utils output here
-    # can surface type mismatches in mm_processor_kwargs for some Qwen3-VL setups.
     return {
         "prompt": text,
-        "multi_modal_data": {
-            "video": f"file://{os.path.abspath(sample.video_path)}"
-        },
-        "mm_processor_kwargs": (
-            {"fps": fps} if fps > 0 else {"nframes": nframes}
-        ),
+        "multi_modal_data": {"video": video_data},
     }
 
 
