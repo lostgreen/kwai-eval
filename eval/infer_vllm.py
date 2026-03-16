@@ -207,10 +207,11 @@ def build_request(
     """
     Build a single vLLM request dict for a QASample.
 
-    Uses qwen_vl_utils.process_vision_info to load actual pixel data,
-    since vLLM's multi_modal_data expects tensors/arrays, not file:// URIs.
+    Uses qwen_vl_utils.fetch_video to load video frames + metadata,
+    which is required by newer vLLM for Qwen3-VL (VideoMetadata).
     """
     from qwen_vl_utils import process_vision_info
+    from qwen_vl_utils.vision_process import fetch_video
 
     prompt_text = build_prompt(sample, dataset_type)
 
@@ -244,18 +245,32 @@ def build_request(
         messages, tokenize=False, add_generation_prompt=True
     )
 
-    # Load actual pixel data via qwen_vl_utils
-    image_data, video_data = process_vision_info(messages)
-
     if sample.frame_paths:
+        # Image-based: use process_vision_info as before
+        image_data, _ = process_vision_info(messages)
         return {
             "prompt": text,
             "multi_modal_data": {"image": image_data},
         }
 
+    # Video-based: use fetch_video to get frames + metadata (required by vLLM Qwen3-VL)
+    video_dict = dict(content[0])  # copy the video_item (first content element)
+    result, sample_fps = fetch_video(
+        video_dict, return_video_metadata=True, return_video_sample_fps=True
+    )
+    frames, video_metadata = result
+
+    # Qwen3-VL vLLM requires video as (frames, metadata) tuple
+    is_qwen3vl = "Qwen3VL" in type(processor).__name__
+    video_entry = (frames, video_metadata) if is_qwen3vl else frames
+
     return {
         "prompt": text,
-        "multi_modal_data": {"video": video_data},
+        "multi_modal_data": {"video": [video_entry]},
+        "mm_processor_kwargs": {
+            "fps": sample_fps,
+            "do_sample_frames": False,
+        },
     }
 
 
