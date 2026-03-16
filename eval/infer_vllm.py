@@ -40,15 +40,91 @@ Environment:
 """
 import argparse
 import json
+import math
 import os
 import sys
 
+import cv2
+import numpy as np
 import torch
+from torchvision import transforms
+from torchvision.transforms import InterpolationMode
 from tqdm import tqdm
 
 from typing import Optional
 sys.path.insert(0, os.path.dirname(__file__))
 from dataset import MVBenchDataset, QASample, load_dataset
+
+
+# ---------------------------------------------------------------------------
+# Video reading utilities (cv2-based, avoids qwen_vl_utils nframes issues)
+# ---------------------------------------------------------------------------
+
+_IMAGE_FACTOR = 28
+_VIDEO_MIN_PIXELS = 128 * 28 * 28
+_VIDEO_MAX_PIXELS = 768 * 28 * 28
+
+
+def _smart_resize(height: int, width: int, factor: int = _IMAGE_FACTOR,
+                  min_pixels: int = _VIDEO_MIN_PIXELS,
+                  max_pixels: int = _VIDEO_MAX_PIXELS):
+    """Resize keeping aspect ratio, divisible by factor, within pixel budget."""
+    h_bar = max(factor, round(height / factor) * factor)
+    w_bar = max(factor, round(width / factor) * factor)
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return h_bar, w_bar
+
+
+def _read_video_cv2(video_path: str, nframes: int) -> torch.Tensor:
+    """Read *nframes* evenly-spaced frames from *video_path* using OpenCV.
+
+    Returns a float32 tensor of shape ``(nframes, 3, H', W')`` where H'/W'
+    are the smart-resized dimensions matching Qwen VL requirements.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0 or fps <= 0:
+        cap.release()
+        raise IOError(f"Invalid video metadata: {video_path}")
+
+    duration = total_frames / fps
+    timestamps = np.linspace(0, duration, nframes, endpoint=False)
+
+    frames = []
+    for t in timestamps:
+        frame_id = int(round(t * fps))
+        frame_id = min(frame_id, total_frames - 1)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        # BGR→RGB, HWC→CHW
+        frames.append(np.transpose(frame[:, :, ::-1], (2, 0, 1)))
+
+    cap.release()
+
+    if len(frames) < 2:
+        raise IOError(f"Could only read {len(frames)} frames from {video_path}")
+
+    video_tensor = torch.tensor(np.array(frames))  # (N, 3, H, W)
+    _, _, h, w = video_tensor.shape
+    rh, rw = _smart_resize(h, w)
+    video_tensor = transforms.functional.resize(
+        video_tensor, [rh, rw],
+        interpolation=InterpolationMode.BICUBIC, antialias=True,
+    ).float()
+    return video_tensor
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -207,17 +283,13 @@ def build_request(
     """
     Build a single vLLM request dict for a QASample.
 
-    Uses qwen_vl_utils.fetch_video to load video frames + metadata,
-    which is required by newer vLLM for Qwen3-VL (VideoMetadata).
+    Reads video frames with OpenCV (bypasses qwen_vl_utils decord issues)
+    and passes pre-loaded tensors to vLLM.
     """
-    from qwen_vl_utils import process_vision_info
-    from qwen_vl_utils.vision_process import fetch_video
-
     prompt_text = build_prompt(sample, dataset_type)
 
-    # Build content list
+    # Build content list (for chat template only — actual pixels loaded separately)
     if sample.frame_paths:
-        # Frame-based task: pass individual images
         content = [{"type": "image", "image": fp} for fp in sample.frame_paths]
     else:
         video_item = {"type": "video", "video": sample.video_path}
@@ -225,7 +297,6 @@ def build_request(
             video_item["fps"] = fps
         else:
             video_item["nframes"] = nframes
-        # Pixel budget must be set explicitly to support higher nframes (e.g. 32+)
         video_item["min_pixels"] = 100352
         video_item["max_pixels"] = 602112
         video_item["total_pixels"] = 38535168 if nframes >= 64 else 19267584
@@ -246,31 +317,19 @@ def build_request(
     )
 
     if sample.frame_paths:
-        # Image-based: use process_vision_info as before
+        from qwen_vl_utils import process_vision_info
         image_data, _ = process_vision_info(messages)
         return {
             "prompt": text,
             "multi_modal_data": {"image": image_data},
         }
 
-    # Video-based: use fetch_video to get frames + metadata (required by vLLM Qwen3-VL)
-    video_dict = dict(content[0])  # copy the video_item (first content element)
-    result, sample_fps = fetch_video(
-        video_dict, return_video_metadata=True, return_video_sample_fps=True
-    )
-    frames, video_metadata = result
-
-    # Qwen3-VL vLLM requires video as (frames, metadata) tuple
-    is_qwen3vl = "Qwen3VL" in type(processor).__name__
-    video_entry = (frames, video_metadata) if is_qwen3vl else frames
+    # Read video with OpenCV (matches FutureOmni's extract.py approach)
+    video_tensor = _read_video_cv2(sample.video_path, nframes)
 
     return {
         "prompt": text,
-        "multi_modal_data": {"video": [video_entry]},
-        "mm_processor_kwargs": {
-            "fps": sample_fps,
-            "do_sample_frames": False,
-        },
+        "multi_modal_data": {"video": [video_tensor]},
     }
 
 
