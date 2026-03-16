@@ -29,6 +29,8 @@ fi
 source "${CONFIG_FILE}"
 
 export CUDA_VISIBLE_DEVICES
+export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE_ROOT}"
+export HF_HUB_CACHE="${HF_HUB_CACHE_ROOT}"
 
 # ============================================================
 #  Select inference script based on BACKEND
@@ -72,6 +74,7 @@ echo "  Backend        : ${BACKEND}"
 echo "  GPUs           : ${CUDA_VISIBLE_DEVICES}"
 echo "  Mode           : ${BENCHMARK}"
 echo "  Output         : ${OUTPUT_DIR}"
+echo "  HF Cache       : ${HUGGINGFACE_HUB_CACHE}"
 echo "  FutureOmni     : ${FUTUREOMNI_NFRAMES} frames"
 echo "  seeAoT         : ${SEEAOT_NFRAMES} frames"
 echo "  MVBench        : ${MVBENCH_NFRAMES} frames"

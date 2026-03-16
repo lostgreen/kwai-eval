@@ -33,6 +33,12 @@ CUDA_VISIBLE_DEVICES="0,1"
 OUTPUT_DIR="./results"
 
 # ------------------------------------------------------------
+#  Hugging Face cache
+# ------------------------------------------------------------
+# Shared hub cache root for auto-discovered / auto-downloaded datasets.
+HF_HUB_CACHE_ROOT="/m2v_intern/xuboshen/zgw/hf_cache_temp"
+
+# ------------------------------------------------------------
 #  vLLM-specific options (only used when BACKEND="vllm")
 # ------------------------------------------------------------
 # Samples sent to llm.generate() per call. Higher = more throughput
@@ -134,7 +140,7 @@ MVBENCH_FPS=1.0
 # ------------------------------------------------------------
 
 # Root directory containing lvb_val.json, videos/, subtitles/.
-LONGVIDEOBENCH_DATA_ROOT="/path/to/LongVideoBench"
+LONGVIDEOBENCH_DATA_ROOT="/m2v_intern/xuboshen/zgw/hf_cache_temp/datasets--longvideobench--LongVideoBench"
 
 # Frames to sample per video.
 # Default: 32  (long videos benefit from more frames; VLMEvalKit uses 64 max)
