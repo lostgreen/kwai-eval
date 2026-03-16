@@ -6,9 +6,9 @@
 # ============================================================
 
 # ---- 仓库路径 ----
-FUTUREOMNI_REPO="/home/xuboshen/FutureOmni"
-SEEAOT_REPO="/home/xuboshen/seeAoT"
-VLMEVALKIT_REPO="/home/xuboshen/VLMEvalKit"
+FUTUREOMNI_REPO="/home/xuboshen/zgw/A/FutureOmni-kwai"
+SEEAOT_REPO="/home/xuboshen/zgw/A/AoTBench-kwai"
+VLMEVALKIT_REPO="/home/xuboshen/zgw/VLMEvalKit"
 
 # ---- 模型 ----
 MODEL_PATH="/home/xuboshen/models/Qwen3-VL-4B-Instruct"
@@ -24,4 +24,4 @@ HF_HUB_CACHE_ROOT="/m2v_intern/xuboshen/zgw/hf_cache_temp"
 
 # ---- 结果输出 (所有评测结果统一存到这个目录下) ----
 GLOBAL_CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_ROOT="${GLOBAL_CONFIG_DIR}/results"
+RESULTS_ROOT="/m2v_intern/xuboshen/zgw/eval_results"

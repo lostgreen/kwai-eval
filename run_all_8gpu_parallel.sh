@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="${SCRIPT_DIR}/logs"
+LOG_DIR="/m2v_intern/xuboshen/zgw/eval_results/logs"
 mkdir -p "${LOG_DIR}"
 
 TS="$(date +%Y%m%d_%H%M%S)"
