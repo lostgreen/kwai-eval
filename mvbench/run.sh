@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================
-#  MVBench - 使用 VLMEvalKit 原生 run.py (torchrun 多卡)
+#  MVBench - 使用 VLMEvalKit 原生 run.py (单进程, vLLM 自动重用多卡)
+#
+#  注意: 不要用 torchrun 启动, 否则 torchrun 会将每个 worker 的
+#  CUDA_VISIBLE_DEVICES 重置为单卡, 导致 VLMEvalKit 内部断言失败。
+#  单进程模式下 vLLM 通过 tensor_parallel_size 自动利用多卡。
 #
 #  Usage:
 #    bash mvbench/run.sh
@@ -32,7 +36,6 @@ echo "  Model   : ${MODEL_NAME}"
 echo "  Dataset : ${DATASET}"
 echo "  Config  : ${EVAL_CONFIG}"
 echo "  GPU     : ${CUDA_VISIBLE_DEVICES}"
-echo "  nproc   : ${NPROC}"
 echo "  Output  : ${WORK_DIR}"
 echo "============================================================"
 
@@ -40,14 +43,12 @@ cd "${VLMEVALKIT_REPO}"
 
 # 如果 eval_config.json 存在则用 --config (支持本地模型路径), 否则回落到 --data/--model
 if [ -f "${EVAL_CONFIG}" ]; then
-    torchrun --nproc-per-node="${NPROC}" --master_port="${MASTER_PORT}" \
-        run.py \
+    python run.py \
         --config "${EVAL_CONFIG}" \
         --work-dir "${WORK_DIR}"
 else
     echo "  [WARN] eval_config.json not found, falling back to --data/--model"
-    torchrun --nproc-per-node="${NPROC}" --master_port="${MASTER_PORT}" \
-        run.py \
+    python run.py \
         --data "${DATASET}" \
         --model "${MODEL_NAME}" \
         --work-dir "${WORK_DIR}"

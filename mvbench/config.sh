@@ -15,8 +15,6 @@ MODEL_NAME="Qwen3-VL-4B-Instruct"
 
 # ---- GPU ----
 CUDA_VISIBLE_DEVICES="4,5"
-NPROC=2                     # torchrun 进程数
-MASTER_PORT=29501
 
 # ---- Dataset (VLMEvalKit 注册名, 见 video_dataset_config.py) ----
 # 可选: MVBench_MP4_1fps / MVBench_MP4_8frame / MVBench_8frame 等
