@@ -271,9 +271,10 @@ def _resolve_longvideobench_root(data_root: str) -> str:
         )
     if not _longvideobench_is_complete(root):
         missing = _longvideobench_missing_videos(root)
-        raise FileNotFoundError(
-            "LongVideoBench download/extraction is still incomplete at "
-            f"{root}. Missing examples: {missing}"
+        print(
+            "[LongVideoBench] WARNING: download/extraction is still incomplete at "
+            f"{root}. Missing examples: {missing}\n"
+            "  These samples will be skipped during inference."
         )
     return root
 
