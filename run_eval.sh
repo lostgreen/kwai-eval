@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ============================================================
 #  Load configuration
 # ============================================================
-CONFIG_FILE="${SCRIPT_DIR}/config.sh"
+CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/config.sh}"
 if [ ! -f "${CONFIG_FILE}" ]; then
     echo "[ERROR] config.sh not found at ${CONFIG_FILE}"
     exit 1
